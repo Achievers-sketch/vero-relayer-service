@@ -1,0 +1,15 @@
+services:
+  relayer:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    depends_on:
+      - stellar
+
+  stellar:
+    image: stellar/quickstart:latest
+    ports:
+      - "8000:8000"
+    command: --standalone --enable-soroban-rpc
