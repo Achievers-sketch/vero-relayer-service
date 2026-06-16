@@ -2,7 +2,9 @@
   "name": "vero-relayer-service",
   "version": "1.0.0",
   "license": "MIT",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
@@ -16,8 +18,9 @@
     "prom-client": "^15.0.0"
   },
   "devDependencies": {
-    "nodemon": "3.1.4",
+    "@types/express": "^5.0.6",
     "jest": "29.7.0",
+    "nodemon": "3.1.4",
     "supertest": "6.3.4"
   }
 }
