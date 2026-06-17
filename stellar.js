@@ -55,7 +55,7 @@ async function registerTaskOnChain(githubId, options = {}) {
 
   transactionLogger.started({ githubId, fee }, '[stellar] Compiling transaction for GitHub PR...');
 
-  const result = await submit({
+  const submitResult = await submit({
     githubId,
     fee,
     operation: 'manageData',

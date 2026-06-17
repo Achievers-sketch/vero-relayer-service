@@ -1,4 +1,6 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
+const { verifySignature } = require('./src/middleware/auth');
 const {
   buildGitHubPullRequestEventPayload,
   buildMetadataFromRequest,
@@ -29,6 +31,9 @@ function createApp(options = {}) {
   app.post('/github-webhook', verifySignature, async (req, res) => {
     const { action, pull_request: pr } = req.body;
 
+  // GitHub webhook endpoint
+  app.post('/github-webhook', verifySignature, async (req, res) => {
+    const { action, pull_request: pr } = req.body;
     if (action !== 'closed' || !pr?.merged) {
       return res.status(200).json({ skipped: true });
     }
@@ -37,9 +42,7 @@ function createApp(options = {}) {
     if (!hasLabel) {
       return res.status(200).json({ skipped: true, reason: 'no wave-contribution label' });
     }
-
     const eventPayload = buildGitHubPullRequestEventPayload(req.body, buildMetadataFromRequest(req));
-
     try {
       const job = await enqueueEventJob(eventPayload);
       logger.info({ pr: pr.number, eventType: eventPayload.eventType, jobId: job.id }, '[webhook] queued PR event');
@@ -49,6 +52,10 @@ function createApp(options = {}) {
       return res.status(500).json({ ok: false, error: 'failed to enqueue event' });
     }
   });
+
+  // Initialize batcher (uses registerBatchOnChain from stellar)
+  const batcher = new EventBatcher(registerBatchOnChain);
+  // Note: batcher usage is elsewhere in the codebase.
 
   return app;
 }
@@ -64,10 +71,6 @@ function startServer() {
   });
 
   return app.listen(port, () => logger.info({ port }, 'Server listening on port'));
-}
-
-if (require.main === module) {
-  startServer();
 }
 
 module.exports = {
