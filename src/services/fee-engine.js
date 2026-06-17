@@ -234,10 +234,62 @@ function getCacheKey(config) {
   ].join('|');
 }
 
+/**
+ * Validate and parse a caller-supplied fee override.
+ *
+ * Accepts a string or number in stroops.  Returns a BigInt on success so it
+ * can be fed directly into clampFee() without a second parse step.
+ *
+ * Throws synchronously on an invalid value so the error surfaces before any
+ * network I/O is attempted.
+ *
+ * @param {string|number} feeOverride - Caller-supplied fee in stroops
+ * @returns {bigint}
+ */
+function resolveCustomFee(feeOverride) {
+  const raw = String(feeOverride).trim();
+
+  if (!/^\d+$/.test(raw)) {
+    throw new Error('feeOverride must be a positive integer stroop value');
+  }
+
+  const parsed = BigInt(raw);
+
+  if (parsed <= 0n) {
+    throw new Error('feeOverride must be greater than 0');
+  }
+
+  return parsed;
+}
+
 async function estimateStellarFeeDetails(options = {}) {
   const config = options.config || getFeeEngineConfig(options.env);
   const now = options.now ? options.now() : Date.now();
   const logger = getLogger(options);
+
+  const env = options.env || process.env;
+  // --- Custom fee override: skip RPC entirely, still enforce clamp bounds ---
+  const feeOverride = (options.feeOverride !== undefined && options.feeOverride !== null)
+    ? options.feeOverride
+    : env.STELLAR_FEE_OVERRIDE;
+
+  if (feeOverride !== undefined && feeOverride !== null && String(feeOverride).trim() !== '') {
+    const overrideFee = resolveCustomFee(feeOverride);
+    const selectedFee = clampFee(overrideFee, config.minFee, config.maxFee);
+
+    const result = {
+      fee: selectedFee.toString(),
+      source: 'override',
+      percentile: config.percentile,
+      minFee: config.minFee.toString(),
+      maxFee: config.maxFee.toString()
+    };
+
+    log(logger, `[fee] selected=${result.fee} percentile=${result.percentile} min=${result.minFee} max=${result.maxFee} source=${result.source}`);
+
+    return result;
+  }
+
   const cacheKey = getCacheKey(config);
 
   if (config.cacheMs > 0 && cachedEstimate && cachedEstimate.cacheKey === cacheKey && cachedEstimate.expiresAt > now) {
@@ -316,5 +368,6 @@ module.exports = {
   estimateStellarFeeDetails,
   extractPercentileFee,
   getFeeEngineConfig,
+  resolveCustomFee,
   validateFeeConfig
 };

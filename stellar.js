@@ -51,11 +51,11 @@ async function registerTaskOnChain(githubId, options = {}) {
   const estimateFee = options.estimateFee || estimateStellarFee;
   const submit = options.submitTransaction || submitTransaction;
 
-  const fee = await estimateFee();
+  const fee = await estimateFee({ feeOverride: options.feeOverride });
 
   transactionLogger.started({ githubId, fee }, '[stellar] Compiling transaction for GitHub PR...');
 
-  const submitResult = await submit({
+  const result = await submit({
     githubId,
     fee,
     operation: 'manageData',

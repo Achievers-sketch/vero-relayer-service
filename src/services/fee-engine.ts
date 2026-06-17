@@ -77,6 +77,7 @@ export type FeeEngineOptions = {
   client?: FeeStatsClient;
   logger?: Logger;
   now?: () => number;
+  feeOverride?: string | number | null;
 };
 
 let cachedEstimate: { cacheKey: string; expiresAt: number; result: FeeEstimate } | null = null;
@@ -301,10 +302,50 @@ function getCacheKey(config: FeeEngineConfig): string {
   ].join('|');
 }
 
+export function resolveCustomFee(feeOverride: string | number): bigint {
+  const raw = String(feeOverride).trim();
+
+  if (!/^\d+$/.test(raw)) {
+    throw new Error('feeOverride must be a positive integer stroop value');
+  }
+
+  const parsed = BigInt(raw);
+
+  if (parsed <= 0n) {
+    throw new Error('feeOverride must be greater than 0');
+  }
+
+  return parsed;
+}
+
 export async function estimateStellarFeeDetails(options: FeeEngineOptions = {}): Promise<FeeEstimate> {
   const config = options.config || getFeeEngineConfig(options.env);
   const now = options.now ? options.now() : Date.now();
   const logger = getLogger(options);
+
+  const env = options.env || process.env;
+  // --- Custom fee override: skip RPC entirely, still enforce clamp bounds ---
+  const feeOverride = (options.feeOverride !== undefined && options.feeOverride !== null)
+    ? options.feeOverride
+    : env.STELLAR_FEE_OVERRIDE;
+
+  if (feeOverride !== undefined && feeOverride !== null && String(feeOverride).trim() !== '') {
+    const overrideFee = resolveCustomFee(feeOverride);
+    const selectedFee = clampFee(overrideFee, config.minFee, config.maxFee);
+
+    const result: FeeEstimate = {
+      fee: selectedFee.toString(),
+      source: 'override',
+      percentile: config.percentile,
+      minFee: config.minFee.toString(),
+      maxFee: config.maxFee.toString()
+    };
+
+    log(logger, `[fee] selected=${result.fee} percentile=${result.percentile} min=${result.minFee} max=${result.maxFee} source=${result.source}`);
+
+    return result;
+  }
+
   const cacheKey = getCacheKey(config);
 
   if (config.cacheMs > 0 && cachedEstimate && cachedEstimate.cacheKey === cacheKey && cachedEstimate.expiresAt > now) {
@@ -315,7 +356,7 @@ export async function estimateStellarFeeDetails(options: FeeEngineOptions = {}):
   let source = 'fallback';
 
   try {
-    const client = options.client || createFeeStatsClient(config.rpcUrl);
+    const client = options.client || createFeeStatsClient(config.rpcUrl ?? null);
 
     if (!client) {
       warn(logger, '[fee] Stellar RPC URL not configured; using fallback fee');
