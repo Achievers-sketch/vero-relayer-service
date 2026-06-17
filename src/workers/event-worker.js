@@ -9,6 +9,9 @@ const {
   getEventQueueName,
   getRedisConnectionOptions
 } = require('../queue/redis');
+const { createEventQueue } = require('../queue/event-queue');
+const { createCleanupJob } = require('../queue/cleanup');
+const { logger } = require('../logger');
 
 function getJobEventType(job) {
   return (job && job.data && job.data.eventType) || 'unknown';
@@ -82,6 +85,11 @@ async function startEventWorker() {
   const worker = createEventWorker({ queueName, concurrency });
   let closing = false;
 
+  const cleanupQueue = createEventQueue();
+  const cleanupTask = createCleanupJob(cleanupQueue, { logger });
+  cleanupTask.start();
+  logger.info({ queue: queueName }, 'queue cleanup job scheduled (daily at midnight UTC)');
+
   console.log(`[worker] status=started queue=${queueName} concurrency=${concurrency}`);
 
   async function shutdown(signal) {
@@ -91,6 +99,8 @@ async function startEventWorker() {
 
     closing = true;
     console.log(`[worker] status=shutdown signal=${signal}`);
+    cleanupTask.stop();
+    await cleanupQueue.close();
     await worker.close();
     process.exit(0);
   }
