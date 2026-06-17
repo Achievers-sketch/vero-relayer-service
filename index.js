@@ -1,14 +1,11 @@
 const express = require('express');
-const rateLimit = require('express-rate-limit');
 const { verifySignature } = require('./src/middleware/auth');
-const { healthCheck } = require('./src/db/client');
 const {
   buildGitHubPullRequestEventPayload,
   buildMetadataFromRequest,
   enqueueEvent,
   validateRedisConfig
 } = require('./src/queue');
-const { verifySignature } = require('./src/middleware/auth');
 const { registerMetrics } = require('./src/metrics/metrics');
 const { logger } = require('./src/logger');
 const { startConfigPoller } = require('./src/services/config-poller');
@@ -28,9 +25,6 @@ function createApp(options = {}) {
   app.get('/health', (req, res) => {
     res.status(200).send('OK');
   });
-
-  app.post('/github-webhook', verifySignature, async (req, res) => {
-    const { action, pull_request: pr } = req.body;
 
   // GitHub webhook endpoint
   app.post('/github-webhook', verifySignature, async (req, res) => {
@@ -53,10 +47,6 @@ function createApp(options = {}) {
       return res.status(500).json({ ok: false, error: 'failed to enqueue event' });
     }
   });
-
-  // Initialize batcher (uses registerBatchOnChain from stellar)
-  const batcher = new EventBatcher(registerBatchOnChain);
-  // Note: batcher usage is elsewhere in the codebase.
 
   return app;
 }

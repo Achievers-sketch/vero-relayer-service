@@ -5,7 +5,8 @@ const {
   estimateStellarFee,
   estimateStellarFeeDetails,
   extractPercentileFee,
-  getFeeEngineConfig
+  getFeeEngineConfig,
+  resolveCustomFee
 } = require('../src/services/fee-engine');
 
 const silentLogger = {
@@ -186,3 +187,72 @@ test('short cache window reuses recent fee estimates only when configured', asyn
 
   clearFeeEstimateCache();
 });
+
+// ── Custom fee override ────────────────────────────────────────────────────
+
+test('feeOverride bypasses RPC and returns the supplied fee as a string', async () => {
+  let rpcCalled = false;
+  const client = {
+    getFeeStats: async () => { rpcCalled = true; return {}; }
+  };
+
+  const result = await estimateStellarFeeDetails({
+    env: env(),
+    client,
+    logger: silentLogger,
+    feeOverride: '500'
+  });
+
+  assert.equal(result.fee, '500');
+  assert.equal(result.source, 'override');
+  assert.equal(rpcCalled, false, 'RPC must not be called when feeOverride is set');
+});
+
+test('feeOverride accepts a numeric value and converts it to a string', async () => {
+  const result = await estimateStellarFeeDetails({
+    env: env(),
+    client: { getFeeStats: async () => ({}) },
+    logger: silentLogger,
+    feeOverride: 750
+  });
+
+  assert.equal(result.fee, '750');
+  assert.equal(result.source, 'override');
+});
+
+test('feeOverride is still clamped to the configured maximum', async () => {
+  const result = await estimateStellarFeeDetails({
+    env: env({ STELLAR_MAX_FEE: '400' }),
+    client: { getFeeStats: async () => ({}) },
+    logger: silentLogger,
+    feeOverride: '9999'
+  });
+
+  assert.equal(result.fee, '400');
+  assert.equal(result.source, 'override');
+});
+
+test('resolveCustomFee throws on a non-integer value', () => {
+  assert.throws(() => resolveCustomFee('not-a-number'), /positive integer stroop value/);
+  assert.throws(() => resolveCustomFee('0'), /greater than 0/);
+  assert.throws(() => resolveCustomFee('1.5'), /positive integer stroop value/);
+});
+
+test('STELLAR_FEE_OVERRIDE from env is used when options.feeOverride is absent', async () => {
+  let rpcCalled = false;
+  const client = {
+    getFeeStats: async () => { rpcCalled = true; return {}; }
+  };
+
+  const result = await estimateStellarFeeDetails({
+    env: env({ STELLAR_FEE_OVERRIDE: '888' }),
+    client,
+    logger: silentLogger
+  });
+
+  assert.equal(result.fee, '888');
+  assert.equal(result.source, 'override');
+  assert.equal(rpcCalled, false, 'RPC must not be called when STELLAR_FEE_OVERRIDE is in env');
+});
+
+

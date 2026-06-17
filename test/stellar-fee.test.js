@@ -58,3 +58,31 @@ test('registerTaskOnChain does not submit when fee estimation throws a configura
 
   assert.deepEqual(calls, ['estimateFee']);
 });
+
+test('registerTaskOnChain propagates feeOverride options to the estimator', async () => {
+  const calls = [];
+  const logs = [];
+  const originalInfo = logger.info;
+  logger.info = (obj, msg) => {
+    logs.push(JSON.stringify(obj) + (msg ? ' ' + msg : ''));
+  };
+
+  try {
+    await registerTaskOnChain(101, {
+      feeOverride: '1500',
+      estimateFee: async (opt = {}) => {
+        calls.push(`estimateFee:${opt.feeOverride || 'none'}`);
+        return opt.feeOverride || '100';
+      },
+      submitTransaction: async transaction => {
+        calls.push(`submit:${transaction.fee}`);
+        return { hash: '0xoverride' };
+      }
+    });
+  } finally {
+    logger.info = originalInfo;
+  }
+
+  assert.deepEqual(calls, ['estimateFee:1500', 'submit:1500']);
+});
+
