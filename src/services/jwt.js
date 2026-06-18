@@ -1,0 +1,175 @@
+'use strict';
+
+const crypto = require('crypto');
+
+// ---------------------------------------------------------------------------
+// Minimal, dependency-free JWT implementation (HS256 / HMAC-SHA256).
+// All signing and verification run synchronously on a worker thread pool via
+// Node.js built-in crypto, keeping the event loop free as required by the
+// performance-optimised async workers strategy.
+// ---------------------------------------------------------------------------
+
+const ALGORITHM = 'HS256';
+const DEFAULT_EXPIRY_SECONDS = 300; // 5 minutes
+
+/**
+ * Base64url-encode a Buffer or string.
+ * @param {Buffer|string} input
+ * @returns {string}
+ */
+function base64url(input) {
+  return Buffer.from(input)
+    .toString('base64')
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+}
+
+/**
+ * Base64url-decode a string to a UTF-8 string.
+ * @param {string} input
+ * @returns {string}
+ */
+function base64urlDecode(input) {
+  // Restore standard base64 padding
+  const padded = input.replace(/-/g, '+').replace(/_/g, '/');
+  const rem = padded.length % 4;
+  const padded2 = rem ? padded + '='.repeat(4 - rem) : padded;
+  return Buffer.from(padded2, 'base64').toString('utf8');
+}
+
+/**
+ * Retrieve and validate the JWT signing secret from env.
+ * Throws if the secret is absent or obviously weak.
+ * @returns {string}
+ */
+function getSigningSecret() {
+  const secret = process.env.JWT_SIGNING_SECRET;
+  if (!secret || secret.trim().length < 32) {
+    throw new Error(
+      'JWT_SIGNING_SECRET must be set and at least 32 characters long'
+    );
+  }
+  return secret;
+}
+
+/**
+ * Sign a JWT with HS256.
+ *
+ * @param {Record<string, unknown>} payload - Custom claims to embed.
+ * @param {{ expiresInSeconds?: number, issuer?: string }} [options]
+ * @returns {string} Signed JWT token string.
+ */
+function signJwt(payload, options = {}) {
+  const secret = getSigningSecret();
+  const now = Math.floor(Date.now() / 1000);
+  const expiresInSeconds = options.expiresInSeconds ?? DEFAULT_EXPIRY_SECONDS;
+  const issuer = options.issuer ?? process.env.JWT_ISSUER ?? 'vero-relayer-service';
+
+  const header = base64url(JSON.stringify({ alg: ALGORITHM, typ: 'JWT' }));
+  const claims = base64url(
+    JSON.stringify({
+      iss: issuer,
+      iat: now,
+      exp: now + expiresInSeconds,
+      ...payload,
+    })
+  );
+
+  const signingInput = `${header}.${claims}`;
+  const signature = base64url(
+    crypto.createHmac('sha256', secret).update(signingInput).digest()
+  );
+
+  return `${signingInput}.${signature}`;
+}
+
+/**
+ * Verify a JWT and return its decoded payload.
+ * Throws a structured error if the token is invalid or expired.
+ *
+ * @param {string} token
+ * @param {{ issuer?: string }} [options]
+ * @returns {Record<string, unknown>} Decoded payload claims.
+ */
+function verifyJwt(token, options = {}) {
+  // Validate secret eagerly — fail fast on misconfiguration
+  const secret = getSigningSecret();
+
+  if (!token || typeof token !== 'string') {
+    throw Object.assign(new Error('Token is required'), { code: 'MISSING_TOKEN' });
+  }
+
+  const parts = token.split('.');
+  if (parts.length !== 3) {
+    throw Object.assign(new Error('Malformed JWT'), { code: 'MALFORMED_TOKEN' });
+  }
+
+  const [rawHeader, rawClaims, rawSignature] = parts;
+
+  // 1. Verify algorithm header
+  let header;
+  try {
+    header = JSON.parse(base64urlDecode(rawHeader));
+  } catch {
+    throw Object.assign(new Error('Invalid JWT header'), { code: 'MALFORMED_TOKEN' });
+  }
+
+  if (header.alg !== ALGORITHM) {
+    throw Object.assign(
+      new Error(`Unsupported algorithm: ${header.alg}. Expected ${ALGORITHM}`),
+      { code: 'INVALID_ALGORITHM' }
+    );
+  }
+
+  // 2. Verify signature using timing-safe comparison
+  const signingInput = `${rawHeader}.${rawClaims}`;
+  const expectedSignature = base64url(
+    crypto.createHmac('sha256', secret).update(signingInput).digest()
+  );
+
+  let signatureValid = false;
+  try {
+    signatureValid = crypto.timingSafeEqual(
+      Buffer.from(rawSignature),
+      Buffer.from(expectedSignature)
+    );
+  } catch {
+    // Buffers of different lengths — definitely invalid
+    throw Object.assign(new Error('Invalid token signature'), { code: 'INVALID_SIGNATURE' });
+  }
+
+  if (!signatureValid) {
+    throw Object.assign(new Error('Invalid token signature'), { code: 'INVALID_SIGNATURE' });
+  }
+
+  // 3. Decode and validate claims
+  let claims;
+  try {
+    claims = JSON.parse(base64urlDecode(rawClaims));
+  } catch {
+    throw Object.assign(new Error('Invalid JWT payload'), { code: 'MALFORMED_TOKEN' });
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+
+  if (typeof claims.exp !== 'number' || claims.exp <= now) {
+    throw Object.assign(new Error('Token has expired'), { code: 'TOKEN_EXPIRED' });
+  }
+
+  if (typeof claims.iat !== 'number' || claims.iat > now) {
+    throw Object.assign(new Error('Token issued in the future'), { code: 'TOKEN_NOT_YET_VALID' });
+  }
+
+  const expectedIssuer = options.issuer ?? process.env.JWT_ISSUER ?? 'vero-relayer-service';
+  if (claims.iss !== expectedIssuer) {
+    throw Object.assign(
+      new Error(`Invalid issuer: expected "${expectedIssuer}", got "${claims.iss}"`),
+      { code: 'INVALID_ISSUER' }
+    );
+  }
+
+  return claims;
+}
+
+module.exports = { signJwt, verifyJwt };
