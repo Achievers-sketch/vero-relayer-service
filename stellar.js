@@ -36,7 +36,7 @@ async function submitTransaction(transaction) {
 
   tx.sign(keypair);
 
-  txLog.submitting({ account: publicKey, fee: transaction.fee }, '[stellar] Submitting transaction for PR...');
+  txLog.submitting({ account: publicKey, fee: transaction.fee, feeSource: transaction.feeSource || 'default' }, '[stellar] Submitting transaction for PR...');
 
   try {
     const result = await broadcastTransaction(server, tx);
@@ -51,19 +51,22 @@ async function registerTaskOnChain(githubId, options = {}) {
   const estimateFee = options.estimateFee || estimateStellarFee;
   const submit = options.submitTransaction || submitTransaction;
 
-  const fee = await estimateFee({ feeOverride: options.feeOverride });
+  const feeOverride = options.feeOverride;
+  const fee = await estimateFee({ feeOverride });
+  const feeSource = feeOverride ? 'override' : 'estimated';
 
-  transactionLogger.started({ githubId, fee }, '[stellar] Compiling transaction for GitHub PR...');
+  transactionLogger.started({ githubId, fee, feeSource }, '[stellar] Compiling transaction for GitHub PR...');
 
   const result = await submit({
     githubId,
     fee,
+    feeSource,
     operation: 'manageData',
     key: `vero:pr:${githubId}`,
     value: 'registered'
   });
 
-  transactionLogger.confirmed({ githubId, txHash: result.hash }, '[stellar] Transaction submitted. PR successfully registered on-chain.');
+  transactionLogger.confirmed({ githubId, txHash: result.hash, fee, feeSource }, '[stellar] Transaction submitted. PR successfully registered on-chain.');
   return result;
 }
 
@@ -92,4 +95,3 @@ async function registerBatchOnChain(githubIds) {
 }
 
 module.exports = { registerTaskOnChain, registerBatchOnChain };
-
