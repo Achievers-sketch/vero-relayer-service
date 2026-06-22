@@ -15,9 +15,79 @@
  */
 
 const rateLimit = require('express-rate-limit');
-
 // ipKeyGenerator is the express-rate-limit blessed helper for IPv6-safe keying.
 const { ipKeyGenerator } = require('express-rate-limit');
+let rate_limit_hits_total;
+let logger;
+try {
+  ({ rate_limit_hits_total } = require('../metrics/metrics'));
+} catch (e) {
+  // tests or environments without prom-client can continue — use a noop stub
+  rate_limit_hits_total = { inc: () => {} };
+}
+
+try {
+  ({ logger } = require('../logger'));
+} catch (e) {
+  logger = console;
+}
+const IORedis = require('ioredis');
+const { getRedisConnectionOptions } = require('../queue/redis');
+
+let redisClient;
+let redisStore = null;
+
+function createRedisStore(windowMs) {
+  if (!process.env.REDIS_HOST) {
+    return null;
+  }
+
+  try {
+    const connOpts = getRedisConnectionOptions();
+    redisClient = new IORedis(connOpts);
+
+    // Minimal store implementation compatible with express-rate-limit.
+    // It exposes `incr(key, cb)` and `resetKey(key)`.
+    return {
+      // support both `incr` and `increment` naming variants
+      incr: (key, cb) => {
+        const redisKey = `rl:${key}`;
+        // Atomically INCR and get PTTL
+        redisClient.multi().incr(redisKey).pttl(redisKey).exec((err, replies) => {
+          if (err) return cb(err);
+          const incrReply = replies && replies[0] && replies[0][1];
+          const pttlReply = replies && replies[1] && replies[1][1];
+
+          const hits = Number(incrReply || 0);
+
+          if (pttlReply === -1 || pttlReply === -2) {
+            // Key had no TTL or did not exist; set expiry
+            redisClient.pexpire(redisKey, windowMs).catch(() => {});
+            const reset = Date.now() + windowMs;
+            return cb(null, hits, reset);
+          }
+
+          const reset = Date.now() + Math.max(0, pttlReply);
+          return cb(null, hits, reset);
+        });
+      },
+      increment: (key, cb) {
+        // alias to incr
+        this.incr(key, cb);
+      },
+      resetKey: (key) => {
+        const redisKey = `rl:${key}`;
+        redisClient.del(redisKey).catch(() => {});
+      }
+    };
+  } catch (err) {
+    logger.warn({ err: err && err.message }, 'failed to create redis rate-limit store; falling back to memory store');
+    return null;
+  }
+}
+
+// initialize redis store lazily with the public window by default
+redisStore = createRedisStore(PUBLIC_WINDOW_MS);
 
 // ---------------------------------------------------------------------------
 // Limits (configurable via environment variables)
@@ -73,7 +143,17 @@ const publicRateLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: clientIp,
   skip: (req) => isAuthenticated(req), // authenticated callers use auth limiter
+  store: redisStore || undefined,
   handler(req, res) {
+    try {
+      const route = req.originalUrl || req.url || 'unknown';
+      rate_limit_hits_total.inc({ limiter_type: 'public', route }, 1);
+      (req.log || logger).warn({ ip: clientIp(req), route, limiter: 'public' }, 'rate limit exceeded (public)');
+    } catch (e) {
+      // non-fatal if metrics/logging fails
+      (req.log || logger).warn({ err: e && e.message }, 'failed to record rate limit metric');
+    }
+
     res.status(429).json({
       error: 'Too many requests from this IP. Please retry after the window resets.',
       code: 'RATE_LIMIT_EXCEEDED',
@@ -93,7 +173,16 @@ const authenticatedRateLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: clientIp,
   skip: (req) => !isAuthenticated(req), // public callers use publicRateLimiter
+  store: redisStore || undefined,
   handler(req, res) {
+    try {
+      const route = req.originalUrl || req.url || 'unknown';
+      rate_limit_hits_total.inc({ limiter_type: 'authenticated', route }, 1);
+      (req.log || logger).warn({ ip: clientIp(req), route, limiter: 'authenticated' }, 'rate limit exceeded (authenticated)');
+    } catch (e) {
+      (req.log || logger).warn({ err: e && e.message }, 'failed to record rate limit metric');
+    }
+
     res.status(429).json({
       error: 'Rate limit exceeded for authenticated client. Please retry after the window resets.',
       code: 'RATE_LIMIT_EXCEEDED',
